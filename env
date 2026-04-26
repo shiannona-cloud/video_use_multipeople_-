@@ -1,0 +1,3 @@
+FUNASR_MODEL=paraformer-zh
+FUNASR_VAD_MODEL=fsmn-vad
+FUNASR_PUNC_MODEL=ct-punc
