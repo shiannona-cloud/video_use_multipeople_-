@@ -26,7 +26,7 @@ These are the things where deviation produces silent failures or broken output. 
 5. **Master SRT uses output-timeline offsets**: `output_time = word.start - segment_start + segment_offset`. Otherwise captions misalign after segment concat.
 6. **Never cut inside a word.** Snap every cut edge to a word boundary from the transcript.
 7. **Pad every cut edge.** Working window: 30–200ms. ASR timestamps drift 50–100ms — padding absorbs the drift. Tighter for fast-paced, looser for cinematic.
-8. **Word-level verbatim ASR only.** Never SRT/phrase mode (loses sub-second gap data). Never normalized fillers (loses editorial signal).
+8. **Word-level verbatim ASR only.** Never SRT/phrase mode (loses sub-second gap data). Never normalized fillers (loses editorial signal). For sources > 10 min, use chunked transcription (`transcribe_chunked.py`) to prevent accumulated timestamp drift.
 9. **Cache transcripts per source.** Never re-transcribe unless the source file itself changed.
 10. **Parallel sub-agents for multiple animations.** Never sequential. Spawn N at once via the `Agent` tool; total wall time ≈ slowest one.
 11. **Strategy confirmation before execution.** Never touch the cut until the user has approved the plain-English plan.
@@ -35,7 +35,7 @@ These are the things where deviation produces silent failures or broken output. 
 14. **Preserve conversational completeness.** Keep the seeker's core question and the counselor's corresponding answer in the same selected range.
 15. **Topic ranges must be timestamped and speaker-attributed.** Every proposed topic needs start/end time and speaker roles.
 16. **Prioritize counselor social-news commentary.** When counselor commentary on social news appears, treat it as default keep/high-priority material unless the user explicitly asks to remove it.
-17. **For counseling/dialogue, always export `topic_outline_only.txt` before topic selection.** This file is the required human-readable decision sheet.
+17. **For counseling/dialogue, always export both `topic_outline_only.txt` and `topic_outline_only.md` before topic selection.** Follow the `video-topic-outline` skill format for both files. `.txt` is the plain-text decision sheet; `.md` is the Markdown-rendered companion with tables and quote blocks. Both files must be kept in sync — never write one without the other.
 18. **Before user topic selection, always generate topic-based rough cuts from the source video.** Split source by topic ranges and export one coarse clip per topic.
 19. **Rough-cut filenames must be indexed and human-readable.** Include topic index + concise topic name derived from `话题概述`.
 20. **Rough cuts MUST be generated with ffmpeg (automated), never by manual editing.** Do not ask users to hand-cut topic clips.
@@ -77,6 +77,7 @@ The skill lives in `video-use/`. User footage lives wherever they put it. All se
 
 - **`transcribe.py <video>`** — single-file funASR transcription. `--num-speakers N` optional. Cached.
 - **`transcribe_batch.py <videos_dir>`** — 4-worker parallel transcription. Use for multi-take.
+- **`transcribe_chunked.py <video>`** — silence-boundary chunked transcription. Splits audio at silences (~60s chunks), transcribes each independently with absolute time offsets. **Use for any source > 10 minutes.** Eliminates progressive timestamp drift caused by funASR's long-audio frame accumulation + ct-punc punctuation alignment. `--chunk-duration 60` default. `--force` to overwrite cache.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
@@ -95,7 +96,7 @@ For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a su
    - flag whether the segment is counselor commentary on social news (default keep)
    - evidence quotes with `[start-end]` ranges and speaker tags
    - recommended clip range that preserves Q/A completeness
-4. **Export readable topic sheet (required for counseling/dialogue).** Write `<edit>/topic_outline_only.txt` with one block per topic in this order:
+4. **Export readable topic sheet (required for counseling/dialogue).** Write **both** `<edit>/topic_outline_only.txt` and `<edit>/topic_outline_only.md` — follow the `video-topic-outline` skill (`.cursor/skills/video-topic-outline/SKILL.md`) for the exact output format and field order. Write `.txt` first, then `.md`. The two files must be identical in content, differing only in format (plain text vs. Markdown tables + quote blocks). Per-topic field order in `.txt`:
    - `Topic NN`
    - `时间: [start - end]`
    - `关键词: ...`
@@ -166,7 +167,7 @@ Priority override for counseling content: if a topic is counselor commentary on 
 
 Required companion output for counseling/dialogue:
 
-- Always write `<edit>/topic_outline_only.txt`.
+- Always write **both** `<edit>/topic_outline_only.txt` and `<edit>/topic_outline_only.md`. Use the `video-topic-outline` skill for the `.md` format. Never write one without the other.
 - Keep the per-topic field order fixed for readability: `Topic` → `时间` → `关键词` → `发言数` → `话题概述` → `代表发言`.
 - Place `话题概述` before `代表发言`.
 - `话题概述` must be concrete and human-readable (1–2 sentences), explicitly covering both sides when possible: seeker concern + counselor response/viewpoint.
@@ -388,4 +389,5 @@ Things that consistently fail regardless of style:
 - **Sequential sub-agents for multiple animations.** Always parallel.
 - **Editing before confirming the strategy.** Never.
 - **Re-transcribing cached sources.** Immutable outputs of immutable inputs.
+- **Single-pass transcription of long audio (>10 min).** FunASR's paraformer + fsmn-vad accumulates ~3-5s/min of timestamp drift on long files, plus ct-punc inserts punctuation that misaligns the timestamp-to-character mapping. Always use `transcribe_chunked.py` for sources > 10 min.
 - **Assuming what kind of video it is.** Look first, ask second, edit last.

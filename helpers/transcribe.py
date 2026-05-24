@@ -105,6 +105,15 @@ def _append_spacing(words: list[dict], prev_end: float | None, current_start: fl
     })
 
 
+_CJK_PUNCT = set("，。？！、；：""''（）【】…—～·《》〈〉「」『』")
+_LATIN_PUNCT = set(",.?!;:\"'()[]{}—–-…~/<>")
+_ALL_PUNCT = _CJK_PUNCT | _LATIN_PUNCT
+
+
+def _is_punct(ch: str) -> bool:
+    return ch in _ALL_PUNCT
+
+
 def normalize_funasr_to_words(payload: object) -> list[dict]:
     words: list[dict] = []
     prev_end: float | None = None
@@ -137,6 +146,9 @@ def normalize_funasr_to_words(payload: object) -> list[dict]:
             continue
 
         # Path B: timestamp + text
+        # FunASR's ct-punc model inserts punctuation AFTER ASR — timestamps
+        # only cover speech characters. We must align timestamps to non-punct
+        # characters and merge punctuation into the preceding word.
         ts = block.get("timestamp")
         text = str(block.get("text", "")).strip()
         if isinstance(ts, list) and ts and text:
@@ -150,26 +162,49 @@ def normalize_funasr_to_words(payload: object) -> list[dict]:
                     et_f = float(et)
                 except (TypeError, ValueError):
                     continue
-                # Most FunASR timestamp values are milliseconds.
                 if st_f > 50 or et_f > 50:
                     st_f /= 1000.0
                     et_f /= 1000.0
                 token_spans.append((st_f, et_f))
-            tokens = _text_to_tokens(text)
-            # Some FunASR outputs contain sparse spaces that collapse long
-            # Chinese passages into a handful of tokens. If timestamp spans
-            # are far denser than token count, fallback to char-level tokens.
-            if token_spans and len(tokens) * 2 < len(token_spans):
-                tokens = _char_level_tokens(text)
-            if token_spans:
+
+            if not token_spans:
+                continue
+
+            text_no_space = [ch for ch in text if not ch.isspace()]
+            speech_chars = [ch for ch in text_no_space if not _is_punct(ch)]
+            n_ts = len(token_spans)
+            n_speech = len(speech_chars)
+
+            if n_speech > 0 and abs(n_ts - n_speech) <= max(n_ts * 0.05, 100):
                 start_s = token_spans[0][0]
                 _append_spacing(words, prev_end, start_s)
-                for idx, (st_f, et_f) in enumerate(token_spans):
-                    token = tokens[idx] if idx < len(tokens) else ""
-                    if not token:
+                ts_idx = 0
+                for ch in text_no_space:
+                    if _is_punct(ch):
+                        if words:
+                            words[-1]["text"] += ch
                         continue
-                    _append_word(words, st_f, et_f, token)
+                    if ts_idx < n_ts:
+                        st_f, et_f = token_spans[ts_idx]
+                        _append_word(words, st_f, et_f, ch)
+                        ts_idx += 1
+                    else:
+                        if words:
+                            words[-1]["text"] += ch
                 prev_end = token_spans[-1][1]
+            else:
+                tokens = _text_to_tokens(text)
+                if token_spans and len(tokens) * 2 < len(token_spans):
+                    tokens = _char_level_tokens(text)
+                if token_spans:
+                    start_s = token_spans[0][0]
+                    _append_spacing(words, prev_end, start_s)
+                    for idx, (st_f, et_f) in enumerate(token_spans):
+                        token = tokens[idx] if idx < len(tokens) else ""
+                        if not token:
+                            continue
+                        _append_word(words, st_f, et_f, token)
+                    prev_end = token_spans[-1][1]
             continue
 
     words.sort(key=lambda w: (w.get("start", 0.0), w.get("end", 0.0)))
@@ -197,7 +232,7 @@ def call_funasr(
         kwargs["spk_model"] = None
 
     model = AutoModel(**kwargs)
-    raw = model.generate(input=str(audio_path))
+    raw = model.generate(input=str(audio_path), batch_size_s=300)
     words = normalize_funasr_to_words(raw)
     return {
         "provider": "funasr",
